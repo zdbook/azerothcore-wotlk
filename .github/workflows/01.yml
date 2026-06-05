@@ -1,0 +1,96 @@
+name: Build AzerothCore Tools
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+  workflow_dispatch:               # 手动触发支持
+
+jobs:
+  build-tools:
+    name: Build Tools on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022, macos-13]
+        include:
+          - os: ubuntu-22.04
+            cmake-generator: "Unix Makefiles"
+          - os: windows-2022
+            cmake-generator: "Visual Studio 17 2022"
+          - os: macos-13
+            cmake-generator: "Unix Makefiles"
+    steps:
+      - name: Checkout source code (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'          # 拉取子模块 (数据库/依赖等)
+          fetch-depth: 0
+
+      # --- 依赖安装阶段 (平台适配) ---
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git cmake make gcc g++ clang libmysqlclient-dev libssl-dev libbz2-dev libreadline-dev libncurses-dev libboost-all-dev
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake openssl mysql-client boost
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
+          choco install openssl boost-msvc-14.3 mysql
+          
+      # --- 配置 CMake 并启用所有工具 ---
+      - name: Configure CMake
+        run: |
+          cmake -B build -S . \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DTOOLS_BUILD=all \
+            -DAPPS_BUILD=none \
+            -DSCRIPTS=none \
+            -DMODULES=none \
+            -DWITH_WARNINGS=ON \
+            -G "${{ matrix.cmake-generator }}"
+      # 编译所有工具
+      - name: Build tools
+        run: cmake --build build --config RelWithDebInfo --parallel 4
+
+      # --- 按功能分类打包 (核心逻辑) ---
+      - name: Organize tools by category (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p artifacts/map-tools artifacts/vmap-tools artifacts/mmaps-tools artifacts/db-tools
+          # 地图提取器
+          cp -v build/bin/mapextractor artifacts/map-tools/ || true
+          # VMAP 工具
+          cp -v build/bin/vmap4extractor artifacts/vmap-tools/ || true
+          cp -v build/bin/vmap4assembler artifacts/vmap-tools/ || true
+          # MMAP 生成器
+          cp -v build/bin/mmaps_generator artifacts/mmaps-tools/ || true
+          # 数据库导入工具
+          cp -v build/bin/dbimport artifacts/db-tools/ || true
+          # 辅助脚本
+          cp -v apps/extractor/extractor.bat artifacts/ 2>/dev/null || true
+      - name: Organize tools by category (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          mkdir artifacts\map-tools, artifacts\vmap-tools, artifacts\mmaps-tools, artifacts\db-tools -Force
+          copy build\bin\RelWithDebInfo\mapextractor.exe artifacts\map-tools\
+          copy build\bin\RelWithDebInfo\vmap4extractor.exe, build\bin\RelWithDebInfo\vmap4assembler.exe artifacts\vmap-tools\
+          copy build\bin\RelWithDebInfo\mmaps_generator.exe artifacts\mmaps-tools\
+          copy build\bin\RelWithDebInfo\dbimport.exe artifacts\db-tools\
+          copy apps\extractor\extractor.bat artifacts\
+        shell: pwsh
+        
+      # --- 上传最终产物 (供下载)---
+      - name: Upload final ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: azerothcore-tools-${{ runner.os }}-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7
