@@ -1,0 +1,119 @@
+name: Full Build AzerothCore (All Components)
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+  workflow_dispatch:               # 手动触发
+
+jobs:
+  full-build:
+    name: Full Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            cmake-generator: "Unix Makefiles"
+            artifact-suffix: "linux"
+          - os: windows-2022
+            cmake-generator: "Visual Studio 17 2022"
+            artifact-suffix: "windows"
+          - os: macos-13
+            cmake-generator: "Unix Makefiles"
+            artifact-suffix: "macos"
+
+    steps:
+      - name: Checkout source (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+          fetch-depth: 1
+
+      # ---------- 依赖安装（平台适配） ----------
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git cmake make gcc g++ clang libmysqlclient-dev libssl-dev libbz2-dev libreadline-dev libncurses-dev libboost-all-dev
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake openssl mysql-client boost
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
+          choco install openssl boost-msvc-14.3 mysql
+
+      # ---------- CMake 配置（全量编译） ----------
+      - name: Configure CMake (Full Build)
+        run: |
+          cmake -B build -S . \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DTOOLS_BUILD=all \
+            -DSCRIPTS=dynamic \
+            -DMODULES=static \
+            -DWITH_WARNINGS=ON \
+            -G "${{ matrix.cmake-generator }}"
+
+      # ---------- 编译全部目标 ----------
+      - name: Build all (servers + tools + scripts)
+        run: cmake --build build --config RelWithDebInfo --parallel 4
+
+      # ---------- 收集产物并打包 ZIP ----------
+      - name: Prepare artifacts for packaging (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p artifacts/bin artifacts/etc artifacts/scripts
+          # 核心服务
+          cp -v build/bin/worldserver   artifacts/bin/ 2>/dev/null || true
+          cp -v build/bin/authserver    artifacts/bin/ 2>/dev/null || true
+          # 所有工具
+          cp -v build/bin/mapextractor  artifacts/bin/ 2>/dev/null || true
+          cp -v build/bin/mmaps_generator artifacts/bin/ 2>/dev/null || true
+          cp -v build/bin/vmap4extractor artifacts/bin/ 2>/dev/null || true
+          cp -v build/bin/vmap4assembler artifacts/bin/ 2>/dev/null || true
+          cp -v build/bin/dbimport      artifacts/bin/ 2>/dev/null || true
+          # 脚本库
+          cp -v build/lib/libscripts.so  artifacts/scripts/ 2>/dev/null || true
+          # 配置文件模板
+          cp -v src/server/worldserver/worldserver.conf.dist artifacts/etc/
+          cp -v src/server/authserver/authserver.conf.dist artifacts/etc/
+          cp -v apps/extractor/extractor.bat artifacts/ 2>/dev/null || true
+          # 简易 README
+          echo "Full build of AzerothCore (commit: ${{ github.sha }})" > artifacts/README.txt
+
+      - name: Prepare artifacts for packaging (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          mkdir artifacts\bin, artifacts\etc, artifacts\scripts -Force
+          copy build\bin\RelWithDebInfo\worldserver.exe artifacts\bin\
+          copy build\bin\RelWithDebInfo\authserver.exe artifacts\bin\
+          copy build\bin\RelWithDebInfo\mapextractor.exe artifacts\bin\
+          copy build\bin\RelWithDebInfo\mmaps_generator.exe artifacts\bin\
+          copy build\bin\RelWithDebInfo\vmap4extractor.exe artifacts\bin\
+          copy build\bin\RelWithDebInfo\vmap4assembler.exe artifacts\bin\
+          copy build\bin\RelWithDebInfo\dbimport.exe artifacts\bin\
+          copy build\bin\RelWithDebInfo\scripts.dll artifacts\scripts\
+          copy src\server\worldserver\worldserver.conf.dist artifacts\etc\
+          copy src\server\authserver\authserver.conf.dist artifacts\etc\
+          copy apps\extractor\extractor.bat artifacts\
+          "Full build of AzerothCore (commit: ${{ github.sha }})" > artifacts\README.txt
+        shell: pwsh
+
+      - name: Create final zip archive
+        run: |
+          cd artifacts
+          zip -r ../azerothcore-full-${{ matrix.artifact-suffix }}-${{ github.sha }}.zip .
+        shell: bash
+
+      # ---------- 上传 zip 作为可下载的 Artifact ----------
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: azerothcore-full-${{ matrix.artifact-suffix }}
+          path: azerothcore-full-${{ matrix.artifact-suffix }}-${{ github.sha }}.zip
+          if-no-files-found: error
+          retention-days: 7
