@@ -5,7 +5,7 @@ on:
     branches: [ "master" ]
   pull_request:
     branches: [ "master" ]
-  workflow_dispatch:               # 手动触发
+  workflow_dispatch:
 
 jobs:
   full-build:
@@ -16,14 +16,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-22.04
-            cmake-generator: "Unix Makefiles"
-            artifact-suffix: "linux"
+            artifact-suffix: linux
           - os: windows-2022
-            cmake-generator: "Visual Studio 17 2022"
-            artifact-suffix: "windows"
+            artifact-suffix: windows
           - os: macos-13
-            cmake-generator: "Unix Makefiles"
-            artifact-suffix: "macos"
+            artifact-suffix: macos
 
     steps:
       - name: Checkout source (with submodules)
@@ -32,57 +29,50 @@ jobs:
           submodules: 'recursive'
           fetch-depth: 1
 
-      # ---------- 依赖安装（平台适配） ----------
+      # ---------- 依赖安装 ----------
       - name: Install dependencies (Ubuntu)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y git cmake make gcc g++ clang libmysqlclient-dev libssl-dev libbz2-dev libreadline-dev libncurses-dev libboost-all-dev
+
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: brew install cmake openssl mysql-client boost
+
       - name: Install dependencies (Windows)
         if: runner.os == 'Windows'
         run: |
           choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
           choco install openssl boost-msvc-14.3 mysql
 
-      # ---------- CMake 配置（全量编译） ----------
+      # ---------- CMake 配置（修复 PIC 和 Windows 换行）----------
       - name: Configure CMake (Full Build)
+        # 在 Windows 上使用 cmd 作为 shell，避免 PowerShell 的反斜杠问题
+        shell: cmd
         run: |
-          cmake -B build -S . \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DTOOLS_BUILD=all \
-            -DSCRIPTS=dynamic \
-            -DMODULES=static \
-            -DWITH_WARNINGS=ON \
-            -G "${{ matrix.cmake-generator }}"
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=RelWithDebInfo -DTOOLS_BUILD=all -DSCRIPTS=dynamic -DMODULES=static -DWITH_WARNINGS=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 
-      # ---------- 编译全部目标 ----------
+      # ---------- 编译全部 ----------
       - name: Build all (servers + tools + scripts)
         run: cmake --build build --config RelWithDebInfo --parallel 4
 
-      # ---------- 收集产物并打包 ZIP ----------
+      # ---------- 打包产物 ----------
       - name: Prepare artifacts for packaging (Unix)
         if: runner.os != 'Windows'
         run: |
           mkdir -p artifacts/bin artifacts/etc artifacts/scripts
-          # 核心服务
           cp -v build/bin/worldserver   artifacts/bin/ 2>/dev/null || true
           cp -v build/bin/authserver    artifacts/bin/ 2>/dev/null || true
-          # 所有工具
           cp -v build/bin/mapextractor  artifacts/bin/ 2>/dev/null || true
           cp -v build/bin/mmaps_generator artifacts/bin/ 2>/dev/null || true
           cp -v build/bin/vmap4extractor artifacts/bin/ 2>/dev/null || true
           cp -v build/bin/vmap4assembler artifacts/bin/ 2>/dev/null || true
           cp -v build/bin/dbimport      artifacts/bin/ 2>/dev/null || true
-          # 脚本库
           cp -v build/lib/libscripts.so  artifacts/scripts/ 2>/dev/null || true
-          # 配置文件模板
           cp -v src/server/worldserver/worldserver.conf.dist artifacts/etc/
           cp -v src/server/authserver/authserver.conf.dist artifacts/etc/
           cp -v apps/extractor/extractor.bat artifacts/ 2>/dev/null || true
-          # 简易 README
           echo "Full build of AzerothCore (commit: ${{ github.sha }})" > artifacts/README.txt
 
       - name: Prepare artifacts for packaging (Windows)
@@ -100,7 +90,7 @@ jobs:
           copy src\server\worldserver\worldserver.conf.dist artifacts\etc\
           copy src\server\authserver\authserver.conf.dist artifacts\etc\
           copy apps\extractor\extractor.bat artifacts\
-          "Full build of AzerothCore (commit: ${{ github.sha }})" > artifacts\README.txt
+          Write-Output "Full build of AzerothCore (commit: ${{ github.sha }})" | Out-File artifacts\README.txt -Encoding utf8
         shell: pwsh
 
       - name: Create final zip archive
@@ -109,7 +99,6 @@ jobs:
           zip -r ../azerothcore-full-${{ matrix.artifact-suffix }}-${{ github.sha }}.zip .
         shell: bash
 
-      # ---------- 上传 zip 作为可下载的 Artifact ----------
       - name: Upload ZIP artifact
         uses: actions/upload-artifact@v4
         with:
