@@ -46,19 +46,31 @@ jobs:
           choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
           choco install openssl boost-msvc-14.3 mysql
 
-      # ---------- CMake 配置（修复 PIC 和 Windows 换行）----------
+      # ---------- CMake 配置（全量编译 + PIC 修复）----------
+      # 使用 bash shell 确保跨平台反斜杠续行有效
       - name: Configure CMake (Full Build)
-        # 在 Windows 上使用 cmd 作为 shell，避免 PowerShell 的反斜杠问题
-        shell: cmd
+        shell: bash
         run: |
-          cmake -B build -S . -DCMAKE_BUILD_TYPE=RelWithDebInfo -DTOOLS_BUILD=all -DSCRIPTS=dynamic -DMODULES=static -DWITH_WARNINGS=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+          cmake -B build -S . \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DTOOLS_BUILD=all \
+            -DSCRIPTS=dynamic \
+            -DMODULES=static \
+            -DWITH_WARNINGS=ON \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 
       # ---------- 编译全部 ----------
       - name: Build all (servers + tools + scripts)
         run: cmake --build build --config RelWithDebInfo --parallel 4
 
-      # ---------- 打包产物 ----------
-      - name: Prepare artifacts for packaging (Unix)
+      # ---------- 调试：列出生成的文件（Windows）----------
+      - name: List build output (Windows)
+        if: runner.os == 'Windows'
+        run: Get-ChildItem -Recurse build/bin/ | Select-Object FullName
+        shell: pwsh
+
+      # ---------- 打包产物：Unix ----------
+      - name: Prepare artifacts (Unix)
         if: runner.os != 'Windows'
         run: |
           mkdir -p artifacts/bin artifacts/etc artifacts/scripts
@@ -75,30 +87,47 @@ jobs:
           cp -v apps/extractor/extractor.bat artifacts/ 2>/dev/null || true
           echo "Full build of AzerothCore (commit: ${{ github.sha }})" > artifacts/README.txt
 
-      - name: Prepare artifacts for packaging (Windows)
+      # ---------- 打包产物：Windows ----------
+      - name: Prepare artifacts (Windows)
         if: runner.os == 'Windows'
         run: |
-          mkdir artifacts\bin, artifacts\etc, artifacts\scripts -Force
-          copy build\bin\RelWithDebInfo\worldserver.exe artifacts\bin\
-          copy build\bin\RelWithDebInfo\authserver.exe artifacts\bin\
-          copy build\bin\RelWithDebInfo\mapextractor.exe artifacts\bin\
-          copy build\bin\RelWithDebInfo\mmaps_generator.exe artifacts\bin\
-          copy build\bin\RelWithDebInfo\vmap4extractor.exe artifacts\bin\
-          copy build\bin\RelWithDebInfo\vmap4assembler.exe artifacts\bin\
-          copy build\bin\RelWithDebInfo\dbimport.exe artifacts\bin\
-          copy build\bin\RelWithDebInfo\scripts.dll artifacts\scripts\
-          copy src\server\worldserver\worldserver.conf.dist artifacts\etc\
-          copy src\server\authserver\authserver.conf.dist artifacts\etc\
-          copy apps\extractor\extractor.bat artifacts\
-          Write-Output "Full build of AzerothCore (commit: ${{ github.sha }})" | Out-File artifacts\README.txt -Encoding utf8
+          $binDir = "build/bin/RelWithDebInfo"
+          # 检查关键文件是否存在
+          $required = @("worldserver.exe", "authserver.exe", "mapextractor.exe", "mmaps_generator.exe", "vmap4extractor.exe", "vmap4assembler.exe", "dbimport.exe")
+          $missing = @()
+          foreach ($file in $required) {
+            if (-not (Test-Path "$binDir/$file")) {
+              $missing += $file
+            }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Error "Missing required binaries: $($missing -join ', ')"
+            exit 1
+          }
+          # 创建目录并复制
+          mkdir artifacts/bin, artifacts/etc, artifacts/scripts -Force
+          Copy-Item "$binDir/worldserver.exe" artifacts/bin/
+          Copy-Item "$binDir/authserver.exe" artifacts/bin/
+          Copy-Item "$binDir/mapextractor.exe" artifacts/bin/
+          Copy-Item "$binDir/mmaps_generator.exe" artifacts/bin/
+          Copy-Item "$binDir/vmap4extractor.exe" artifacts/bin/
+          Copy-Item "$binDir/vmap4assembler.exe" artifacts/bin/
+          Copy-Item "$binDir/dbimport.exe" artifacts/bin/
+          Copy-Item "$binDir/scripts.dll" artifacts/scripts/ -ErrorAction SilentlyContinue
+          Copy-Item "src/server/worldserver/worldserver.conf.dist" artifacts/etc/
+          Copy-Item "src/server/authserver/authserver.conf.dist" artifacts/etc/
+          Copy-Item "apps/extractor/extractor.bat" artifacts/
+          Write-Output "Full build of AzerothCore (commit: ${{ github.sha }})" | Out-File artifacts/README.txt -Encoding utf8
         shell: pwsh
 
+      # ---------- 创建 ZIP ----------
       - name: Create final zip archive
         run: |
           cd artifacts
           zip -r ../azerothcore-full-${{ matrix.artifact-suffix }}-${{ github.sha }}.zip .
         shell: bash
 
+      # ---------- 上传 ZIP ----------
       - name: Upload ZIP artifact
         uses: actions/upload-artifact@v4
         with:
