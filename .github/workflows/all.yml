@@ -5,7 +5,7 @@ on:
     branches: [ "master" ]
   pull_request:
     branches: [ "master" ]
-  workflow_dispatch:               # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   full-build:
@@ -46,13 +46,13 @@ jobs:
           choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
           choco install openssl boost-msvc-14.3 mysql
 
-      # ========= CMake 配置 =========
-      # 使用 bash shell 确保跨平台反斜杠续行正常
+      # ========= CMake 配置 (关键修复: 强制指定安装路径) =========
       - name: Configure CMake (Full Build)
         shell: bash
         run: |
           cmake -B build -S . \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_INSTALL_PREFIX=./install \
             -DTOOLS_BUILD=all \
             -DSCRIPTS=dynamic \
             -DMODULES=static \
@@ -65,27 +65,31 @@ jobs:
 
       # ========= 安装到统一目录 =========
       - name: Install to directory
-        run: cmake --install build --config RelWithDebInfo --prefix ./install
+        run: cmake --install build --config RelWithDebInfo
 
       # ========= 打包产物：Unix (Linux/macOS) =========
       - name: Prepare artifacts (Unix)
         if: runner.os != 'Windows'
         run: |
           mkdir -p artifacts
-          # 复制安装目录下的所有内容
           cp -r install/bin install/etc install/scripts artifacts/ 2>/dev/null || true
-          # 复制辅助批处理脚本（可选）
           cp -v apps/extractor/extractor.bat artifacts/ 2>/dev/null || true
-          # 记录构建信息
           echo "Full build of AzerothCore (commit: ${{ github.sha }})" > artifacts/README.txt
           echo "Build date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> artifacts/README.txt
 
-      # ========= 打包产物：Windows =========
+      # ========= 打包产物：Windows (增加容错) =========
       - name: Prepare artifacts (Windows)
         if: runner.os == 'Windows'
         run: |
-          $binDir = "install/bin"
-          # 必需文件列表
+          # 更精确地查找安装目录
+          if (Test-Path "install/bin") {
+            $installDir = "install"
+          } else {
+            Write-Warning "install directory not found, falling back to build/bin/RelWithDebInfo"
+            $installDir = "build/bin/RelWithDebInfo"
+          }
+          
+          $binDir = "$installDir/bin"
           $required = @(
             "worldserver.exe", "authserver.exe",
             "mapextractor.exe", "mmaps_generator.exe",
@@ -98,17 +102,19 @@ jobs:
             }
           }
           if ($missing.Count -gt 0) {
-            Write-Error "Missing required binaries: $($missing -join ', ')"
+            Write-Error "Missing required binaries in '$binDir': $($missing -join ', ')"
+            Write-Host "Contents of '$binDir':" -ForegroundColor Yellow
+            Get-ChildItem -Path $binDir -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  - $($_.Name)" }
             exit 1
           }
+
           # 创建 artifacts 目录结构
           New-Item -ItemType Directory -Force -Path artifacts/bin, artifacts/etc, artifacts/scripts | Out-Null
-          # 复制文件
-          Copy-Item "install/bin/*" -Destination "artifacts/bin/" -Recurse -Force
-          Copy-Item "install/etc/*" -Destination "artifacts/etc/" -Recurse -Force
-          Copy-Item "install/scripts/*" -Destination "artifacts/scripts/" -Recurse -Force -ErrorAction SilentlyContinue
+          Copy-Item "$installDir/bin/*" -Destination "artifacts/bin/" -Recurse -Force
+          Copy-Item "$installDir/etc/*" -Destination "artifacts/etc/" -Recurse -Force -ErrorAction SilentlyContinue
+          Copy-Item "$installDir/scripts/*" -Destination "artifacts/scripts/" -Recurse -Force -ErrorAction SilentlyContinue
           Copy-Item "apps/extractor/extractor.bat" -Destination "artifacts/" -ErrorAction SilentlyContinue
-          # 记录构建信息
+          
           "Full build of AzerothCore (commit: ${{ github.sha }})" | Out-File artifacts/README.txt -Encoding utf8
           "Build date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')" | Out-File artifacts/README.txt -Append -Encoding utf8
         shell: pwsh
