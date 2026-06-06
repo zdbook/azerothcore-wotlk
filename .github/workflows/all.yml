@@ -63,17 +63,16 @@ jobs:
       - name: Build all (servers + tools + scripts)
         run: cmake --build build --config RelWithDebInfo --parallel 4
 
-      # ========= 安装到统一目录 =========
-      - name: Install to directory
+      # ========= 安装配置和脚本（但可执行文件直接从 build/bin 复制）==========
+      - name: Install configs and scripts
         run: cmake --install build --config RelWithDebInfo --prefix ./install
 
-      # ========= 打包产物：Windows（直接从 install 目录收集）==========
+      # ========= 打包产物：Windows =========
       - name: Prepare artifacts (Windows)
         if: runner.os == 'Windows'
         run: |
-          $installDir = "./install"
-          $binDir = "$installDir/bin"
-          # 所需文件列表（注意下划线）
+          # 可执行文件直接从编译输出目录获取
+          $binDir = "build/bin/RelWithDebInfo"
           $required = @(
             "worldserver.exe", "authserver.exe",
             "map_extractor.exe", "mmaps_generator.exe",
@@ -87,20 +86,30 @@ jobs:
           }
           if ($missing.Count -gt 0) {
             Write-Error "Missing required binaries in '$binDir': $($missing -join ', ')"
+            Write-Host "Contents of $binDir:"
+            Get-ChildItem $binDir | Select-Object Name
             exit 1
           }
-          # 创建 artifacts 目录
           New-Item -ItemType Directory -Force -Path artifacts/bin, artifacts/etc, artifacts/scripts | Out-Null
-          # 复制可执行文件
           Copy-Item "$binDir/*.exe" -Destination "artifacts/bin/" -Force
-          # 复制脚本库
-          Copy-Item "$installDir/scripts/*.dll" -Destination "artifacts/scripts/" -Force -ErrorAction SilentlyContinue
-          # 复制配置文件（已由 cmake install 放入 install/etc）
-          Copy-Item "$installDir/etc/worldserver.conf.dist" -Destination "artifacts/etc/" -Force -ErrorAction SilentlyContinue
-          Copy-Item "$installDir/etc/authserver.conf.dist" -Destination "artifacts/etc/" -Force -ErrorAction SilentlyContinue
-          # 复制辅助批处理脚本
+          # 脚本 dll 优先从 install/scripts，否则从 bin 目录
+          if (Test-Path "install/scripts") {
+            Copy-Item "install/scripts/*.dll" -Destination "artifacts/scripts/" -Force -ErrorAction SilentlyContinue
+          } else {
+            Copy-Item "$binDir/scripts_*.dll" -Destination "artifacts/scripts/" -Force -ErrorAction SilentlyContinue
+          }
+          # 配置文件从 install/etc 复制，如果不存在则回退到源码目录
+          if (Test-Path "install/etc/worldserver.conf.dist") {
+            Copy-Item "install/etc/worldserver.conf.dist" -Destination "artifacts/etc/" -Force
+          } else {
+            Copy-Item "src/server/worldserver/worldserver.conf.dist" -Destination "artifacts/etc/" -Force
+          }
+          if (Test-Path "install/etc/authserver.conf.dist") {
+            Copy-Item "install/etc/authserver.conf.dist" -Destination "artifacts/etc/" -Force
+          } else {
+            Copy-Item "src/server/authserver/authserver.conf.dist" -Destination "artifacts/etc/" -Force
+          }
           Copy-Item "apps/extractor/extractor.bat" -Destination "artifacts/" -Force -ErrorAction SilentlyContinue
-          # 记录构建信息
           @"
           Full build of AzerothCore (commit: ${{ github.sha }})
           Build date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
@@ -111,24 +120,35 @@ jobs:
       - name: Prepare artifacts (Unix)
         if: runner.os != 'Windows'
         run: |
-          installDir="./install"
           mkdir -p artifacts/bin artifacts/etc artifacts/scripts
-          # 复制可执行文件
-          cp -v $installDir/bin/worldserver   artifacts/bin/ 2>/dev/null || true
-          cp -v $installDir/bin/authserver    artifacts/bin/ 2>/dev/null || true
-          cp -v $installDir/bin/map_extractor artifacts/bin/ 2>/dev/null || true
-          cp -v $installDir/bin/mmaps_generator artifacts/bin/ 2>/dev/null || true
-          cp -v $installDir/bin/vmap4_extractor artifacts/bin/ 2>/dev/null || true
-          cp -v $installDir/bin/vmap4_assembler artifacts/bin/ 2>/dev/null || true
-          cp -v $installDir/bin/dbimport      artifacts/bin/ 2>/dev/null || true
-          # 复制脚本库（Linux .so，macOS .dylib）
-          cp -v $installDir/scripts/libscripts_*.so  artifacts/scripts/ 2>/dev/null || true
-          cp -v $installDir/scripts/libscripts_*.dylib artifacts/scripts/ 2>/dev/null || true
-          # 复制配置文件
-          cp -v $installDir/etc/worldserver.conf.dist artifacts/etc/ 2>/dev/null || true
-          cp -v $installDir/etc/authserver.conf.dist artifacts/etc/ 2>/dev/null || true
+          # 可执行文件从 build/bin 复制
+          cp -v build/bin/worldserver   artifacts/bin/ 2>/dev/null || true
+          cp -v build/bin/authserver    artifacts/bin/ 2>/dev/null || true
+          cp -v build/bin/map_extractor artifacts/bin/ 2>/dev/null || true
+          cp -v build/bin/mmaps_generator artifacts/bin/ 2>/dev/null || true
+          cp -v build/bin/vmap4_extractor artifacts/bin/ 2>/dev/null || true
+          cp -v build/bin/vmap4_assembler artifacts/bin/ 2>/dev/null || true
+          cp -v build/bin/dbimport      artifacts/bin/ 2>/dev/null || true
+          # 脚本库：优先从 install/scripts，否则从 build/lib
+          if [ -d "install/scripts" ]; then
+            cp -v install/scripts/libscripts_*.so artifacts/scripts/ 2>/dev/null || true
+            cp -v install/scripts/libscripts_*.dylib artifacts/scripts/ 2>/dev/null || true
+          else
+            cp -v build/lib/libscripts_*.so artifacts/scripts/ 2>/dev/null || true
+            cp -v build/lib/libscripts_*.dylib artifacts/scripts/ 2>/dev/null || true
+          fi
+          # 配置文件
+          if [ -f "install/etc/worldserver.conf.dist" ]; then
+            cp -v install/etc/worldserver.conf.dist artifacts/etc/
+          else
+            cp -v src/server/worldserver/worldserver.conf.dist artifacts/etc/
+          fi
+          if [ -f "install/etc/authserver.conf.dist" ]; then
+            cp -v install/etc/authserver.conf.dist artifacts/etc/
+          else
+            cp -v src/server/authserver/authserver.conf.dist artifacts/etc/
+          fi
           cp -v apps/extractor/extractor.bat artifacts/ 2>/dev/null || true
-          # 记录构建信息
           echo "Full build of AzerothCore (commit: ${{ github.sha }})" > artifacts/README.txt
           echo "Build date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> artifacts/README.txt
 
