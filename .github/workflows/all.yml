@@ -63,7 +63,7 @@ jobs:
       - name: Build all (servers + tools + scripts)
         run: cmake --build build --config RelWithDebInfo --parallel 4
 
-      # ========= 安装配置和脚本（但可执行文件直接从 build/bin 复制）==========
+      # ========= 安装配置和脚本 =========
       - name: Install configs and scripts
         run: cmake --install build --config RelWithDebInfo --prefix ./install
 
@@ -71,7 +71,6 @@ jobs:
       - name: Prepare artifacts (Windows)
         if: runner.os == 'Windows'
         run: |
-          # 可执行文件直接从编译输出目录获取
           $binDir = "build/bin/RelWithDebInfo"
           $required = @(
             "worldserver.exe", "authserver.exe",
@@ -85,20 +84,18 @@ jobs:
             }
           }
           if ($missing.Count -gt 0) {
-            Write-Error "Missing required binaries in '$binDir': $($missing -join ', ')"
-            Write-Host "Contents of $binDir:"
+            Write-Error "Missing required binaries in '${binDir}': $($missing -join ', ')"
+            Write-Host "Contents of ${binDir}:"
             Get-ChildItem $binDir | Select-Object Name
             exit 1
           }
           New-Item -ItemType Directory -Force -Path artifacts/bin, artifacts/etc, artifacts/scripts | Out-Null
           Copy-Item "$binDir/*.exe" -Destination "artifacts/bin/" -Force
-          # 脚本 dll 优先从 install/scripts，否则从 bin 目录
           if (Test-Path "install/scripts") {
             Copy-Item "install/scripts/*.dll" -Destination "artifacts/scripts/" -Force -ErrorAction SilentlyContinue
           } else {
             Copy-Item "$binDir/scripts_*.dll" -Destination "artifacts/scripts/" -Force -ErrorAction SilentlyContinue
           }
-          # 配置文件从 install/etc 复制，如果不存在则回退到源码目录
           if (Test-Path "install/etc/worldserver.conf.dist") {
             Copy-Item "install/etc/worldserver.conf.dist" -Destination "artifacts/etc/" -Force
           } else {
@@ -129,7 +126,7 @@ jobs:
           cp -v build/bin/vmap4_extractor artifacts/bin/ 2>/dev/null || true
           cp -v build/bin/vmap4_assembler artifacts/bin/ 2>/dev/null || true
           cp -v build/bin/dbimport      artifacts/bin/ 2>/dev/null || true
-          # 脚本库：优先从 install/scripts，否则从 build/lib
+          # 脚本库
           if [ -d "install/scripts" ]; then
             cp -v install/scripts/libscripts_*.so artifacts/scripts/ 2>/dev/null || true
             cp -v install/scripts/libscripts_*.dylib artifacts/scripts/ 2>/dev/null || true
