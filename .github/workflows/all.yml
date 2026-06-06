@@ -1,30 +1,53 @@
-name: AzerothCore Build
+name: Full Build AzerothCore (All Components)
 
 on:
   push:
-    branches: [ master ]
+    branches: [ "master" ]
   pull_request:
-    branches: [ master ]
+    branches: [ "master" ]
   workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: windows-2022
+  full-build:
+    name: Full Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            artifact-suffix: linux
+          - os: windows-2022
+            artifact-suffix: windows
+          - os: macos-13
+            artifact-suffix: macos
 
     steps:
-      - name: Checkout repository
+      - name: Checkout source code (with submodules)
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: 'recursive'
           fetch-depth: 1
 
-      - name: Install dependencies via Chocolatey
-        shell: pwsh
+      # ========= 安装系统依赖 =========
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
         run: |
-          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' --yes
-          choco install openssl boost-msvc-14.3 mysql --yes
+          sudo apt-get update
+          sudo apt-get install -y git cmake make gcc g++ clang libmysqlclient-dev libssl-dev libbz2-dev libreadline-dev libncurses-dev libboost-all-dev
 
-      - name: Configure CMake
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake openssl mysql-client boost
+
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
+          choco install openssl boost-msvc-14.3 mysql
+
+      # ========= CMake 配置 =========
+      - name: Configure CMake (Full Build)
         shell: bash
         run: |
           cmake -B build -S . \
@@ -36,18 +59,21 @@ jobs:
             -DWITH_WARNINGS=ON \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 
-      - name: Build
-        shell: pwsh
+      # ========= 编译所有目标 =========
+      - name: Build all (servers + tools + scripts)
         run: cmake --build build --config RelWithDebInfo --parallel 4
 
-      - name: Install
-        shell: pwsh
+      # ========= 安装到统一目录 =========
+      - name: Install to directory
         run: cmake --install build --config RelWithDebInfo --prefix ./install
 
-      - name: Collect artifacts
-        shell: pwsh
+      # ========= 打包产物：Windows（直接从 install 目录收集）==========
+      - name: Prepare artifacts (Windows)
+        if: runner.os == 'Windows'
         run: |
-          $binDir = "build/bin/RelWithDebInfo"
+          $installDir = "./install"
+          $binDir = "$installDir/bin"
+          # 所需文件列表（注意下划线）
           $required = @(
             "worldserver.exe", "authserver.exe",
             "map_extractor.exe", "mmaps_generator.exe",
@@ -63,21 +89,61 @@ jobs:
             Write-Error "Missing required binaries in '$binDir': $($missing -join ', ')"
             exit 1
           }
+          # 创建 artifacts 目录
           New-Item -ItemType Directory -Force -Path artifacts/bin, artifacts/etc, artifacts/scripts | Out-Null
+          # 复制可执行文件
           Copy-Item "$binDir/*.exe" -Destination "artifacts/bin/" -Force
-          Copy-Item "$binDir/scripts_*.dll" -Destination "artifacts/scripts/" -Force -ErrorAction SilentlyContinue
-          # 配置文件现在位于 install/configs/ 下
-          Copy-Item "install/configs/worldserver.conf.dist" -Destination "artifacts/etc/" -Force
-          Copy-Item "install/configs/authserver.conf.dist" -Destination "artifacts/etc/" -Force
-          # 可选的 extractor.bat（如果存在）
+          # 复制脚本库
+          Copy-Item "$installDir/scripts/*.dll" -Destination "artifacts/scripts/" -Force -ErrorAction SilentlyContinue
+          # 复制配置文件（已由 cmake install 放入 install/etc）
+          Copy-Item "$installDir/etc/worldserver.conf.dist" -Destination "artifacts/etc/" -Force -ErrorAction SilentlyContinue
+          Copy-Item "$installDir/etc/authserver.conf.dist" -Destination "artifacts/etc/" -Force -ErrorAction SilentlyContinue
+          # 复制辅助批处理脚本
           Copy-Item "apps/extractor/extractor.bat" -Destination "artifacts/" -Force -ErrorAction SilentlyContinue
+          # 记录构建信息
           @"
-Full build of AzerothCore (commit: ${{ github.sha }})
-Build date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
-"@ | Out-File artifacts/README.txt -Encoding utf8
+          Full build of AzerothCore (commit: ${{ github.sha }})
+          Build date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
+          "@ | Out-File artifacts/README.txt -Encoding utf8
+        shell: pwsh
 
-      - name: Upload artifacts
+      # ========= 打包产物：Unix (Linux/macOS) =========
+      - name: Prepare artifacts (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          installDir="./install"
+          mkdir -p artifacts/bin artifacts/etc artifacts/scripts
+          # 复制可执行文件
+          cp -v $installDir/bin/worldserver   artifacts/bin/ 2>/dev/null || true
+          cp -v $installDir/bin/authserver    artifacts/bin/ 2>/dev/null || true
+          cp -v $installDir/bin/map_extractor artifacts/bin/ 2>/dev/null || true
+          cp -v $installDir/bin/mmaps_generator artifacts/bin/ 2>/dev/null || true
+          cp -v $installDir/bin/vmap4_extractor artifacts/bin/ 2>/dev/null || true
+          cp -v $installDir/bin/vmap4_assembler artifacts/bin/ 2>/dev/null || true
+          cp -v $installDir/bin/dbimport      artifacts/bin/ 2>/dev/null || true
+          # 复制脚本库（Linux .so，macOS .dylib）
+          cp -v $installDir/scripts/libscripts_*.so  artifacts/scripts/ 2>/dev/null || true
+          cp -v $installDir/scripts/libscripts_*.dylib artifacts/scripts/ 2>/dev/null || true
+          # 复制配置文件
+          cp -v $installDir/etc/worldserver.conf.dist artifacts/etc/ 2>/dev/null || true
+          cp -v $installDir/etc/authserver.conf.dist artifacts/etc/ 2>/dev/null || true
+          cp -v apps/extractor/extractor.bat artifacts/ 2>/dev/null || true
+          # 记录构建信息
+          echo "Full build of AzerothCore (commit: ${{ github.sha }})" > artifacts/README.txt
+          echo "Build date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> artifacts/README.txt
+
+      # ========= 创建 ZIP 压缩包 =========
+      - name: Create final zip archive
+        run: |
+          cd artifacts
+          zip -r ../azerothcore-full-${{ matrix.artifact-suffix }}-${{ github.sha }}.zip .
+        shell: bash
+
+      # ========= 上传 Artifact =========
+      - name: Upload ZIP artifact
         uses: actions/upload-artifact@v4
         with:
-          name: azerothcore-windows
-          path: artifacts/
+          name: azerothcore-full-${{ matrix.artifact-suffix }}
+          path: azerothcore-full-${{ matrix.artifact-suffix }}-${{ github.sha }}.zip
+          if-no-files-found: error
+          retention-days: 7
