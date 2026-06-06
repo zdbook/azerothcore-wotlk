@@ -46,8 +46,8 @@ jobs:
           choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
           choco install openssl boost-msvc-14.3 mysql
 
-      # ========= CMake 配置 =========
-      - name: Configure CMake
+      # ========= CMake 配置（全量编译 + PIC 修复）==========
+      - name: Configure CMake (Full Build)
         shell: bash
         run: |
           cmake -B build -S . \
@@ -63,13 +63,21 @@ jobs:
       - name: Build all (servers + tools + scripts)
         run: cmake --build build --config RelWithDebInfo --parallel 4
 
-      # ========= 打包产物：Windows (直接从编译目录收集) =========
+      # ========= 安装到统一目录（可选，便于未来扩展）==========
+      - name: Install to directory
+        run: cmake --install build --config RelWithDebInfo --prefix ./install
+
+      # ========= 打包产物：Windows（已修复文件名错误）==========
       - name: Prepare artifacts (Windows)
         if: runner.os == 'Windows'
         run: |
           $binDir = "build/bin/RelWithDebInfo"
-          # 检查关键文件是否存在
-          $required = @("worldserver.exe", "authserver.exe", "mapextractor.exe", "mmaps_generator.exe", "vmap4extractor.exe", "vmap4assembler.exe", "dbimport.exe")
+          # 注意：实际生成的文件名带下划线（map_extractor.exe 而非 mapextractor.exe）
+          $required = @(
+            "worldserver.exe", "authserver.exe",
+            "map_extractor.exe", "mmaps_generator.exe",
+            "vmap4_extractor.exe", "vmap4_assembler.exe", "dbimport.exe"
+          )
           $missing = @()
           foreach ($file in $required) {
             if (-not (Test-Path "$binDir/$file")) {
@@ -80,15 +88,13 @@ jobs:
             Write-Error "Missing required binaries in '$binDir': $($missing -join ', ')"
             exit 1
           }
-          # 创建artifacts目录并复制文件
           New-Item -ItemType Directory -Force -Path artifacts/bin, artifacts/etc, artifacts/scripts | Out-Null
           Copy-Item "$binDir/*.exe" -Destination "artifacts/bin/" -Force
-          Copy-Item "$binDir/scripts.dll" -Destination "artifacts/scripts/" -Force -ErrorAction SilentlyContinue
-          # 复制配置文件模板
+          # 复制所有脚本 DLL
+          Copy-Item "$binDir/scripts_*.dll" -Destination "artifacts/scripts/" -Force -ErrorAction SilentlyContinue
           Copy-Item "src/server/worldserver/worldserver.conf.dist" -Destination "artifacts/etc/" -Force
           Copy-Item "src/server/authserver/authserver.conf.dist" -Destination "artifacts/etc/" -Force
           Copy-Item "apps/extractor/extractor.bat" -Destination "artifacts/" -Force -ErrorAction SilentlyContinue
-          # 记录构建信息
           @"
           Full build of AzerothCore (commit: ${{ github.sha }})
           Build date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
@@ -100,20 +106,19 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           mkdir -p artifacts/bin artifacts/etc artifacts/scripts
-          # 复制二进制文件
           cp -v build/bin/worldserver   artifacts/bin/ 2>/dev/null || true
           cp -v build/bin/authserver    artifacts/bin/ 2>/dev/null || true
-          cp -v build/bin/mapextractor  artifacts/bin/ 2>/dev/null || true
+          cp -v build/bin/map_extractor artifacts/bin/ 2>/dev/null || true
           cp -v build/bin/mmaps_generator artifacts/bin/ 2>/dev/null || true
-          cp -v build/bin/vmap4extractor artifacts/bin/ 2>/dev/null || true
-          cp -v build/bin/vmap4assembler artifacts/bin/ 2>/dev/null || true
+          cp -v build/bin/vmap4_extractor artifacts/bin/ 2>/dev/null || true
+          cp -v build/bin/vmap4_assembler artifacts/bin/ 2>/dev/null || true
           cp -v build/bin/dbimport      artifacts/bin/ 2>/dev/null || true
-          # 复制脚本库和配置文件
-          cp -v build/lib/libscripts.so  artifacts/scripts/ 2>/dev/null || true
+          # 复制脚本库（Linux 下为 .so，macOS 下为 .dylib）
+          cp -v build/lib/libscripts_*.so  artifacts/scripts/ 2>/dev/null || true
+          cp -v build/lib/libscripts_*.dylib artifacts/scripts/ 2>/dev/null || true
           cp -v src/server/worldserver/worldserver.conf.dist artifacts/etc/
           cp -v src/server/authserver/authserver.conf.dist artifacts/etc/
           cp -v apps/extractor/extractor.bat artifacts/ 2>/dev/null || true
-          # 记录构建信息
           echo "Full build of AzerothCore (commit: ${{ github.sha }})" > artifacts/README.txt
           echo "Build date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> artifacts/README.txt
 
