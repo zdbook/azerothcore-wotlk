@@ -63,7 +63,7 @@ jobs:
       - name: Build all (servers + tools + scripts)
         run: cmake --build build --config RelWithDebInfo --parallel 4
 
-      # ========= 安装配置和脚本（用于提取配置文件）==========
+      # ========= 安装配置和脚本 =========
       - name: Install configs and scripts
         run: cmake --install build --config RelWithDebInfo --prefix ./install
 
@@ -91,13 +91,12 @@ jobs:
           }
           New-Item -ItemType Directory -Force -Path artifacts/bin, artifacts/etc, artifacts/scripts | Out-Null
           Copy-Item "$binDir/*.exe" -Destination "artifacts/bin/" -Force
-          # 脚本库
           if (Test-Path "install/scripts") {
             Copy-Item "install/scripts/*.dll" -Destination "artifacts/scripts/" -Force -ErrorAction SilentlyContinue
           } else {
             Copy-Item "$binDir/scripts_*.dll" -Destination "artifacts/scripts/" -Force -ErrorAction SilentlyContinue
           }
-          # 动态查找配置文件（解决路径不存在问题）
+          # 动态查找配置文件
           $worldConf = Get-ChildItem -Recurse -Filter "worldserver.conf.dist" -ErrorAction SilentlyContinue | Select-Object -First 1
           $authConf = Get-ChildItem -Recurse -Filter "authserver.conf.dist" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($worldConf) {
@@ -122,7 +121,6 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           mkdir -p artifacts/bin artifacts/etc artifacts/scripts
-          # 可执行文件从 build/bin 复制
           cp -v build/bin/worldserver   artifacts/bin/ 2>/dev/null || true
           cp -v build/bin/authserver    artifacts/bin/ 2>/dev/null || true
           cp -v build/bin/map_extractor artifacts/bin/ 2>/dev/null || true
@@ -130,7 +128,6 @@ jobs:
           cp -v build/bin/vmap4_extractor artifacts/bin/ 2>/dev/null || true
           cp -v build/bin/vmap4_assembler artifacts/bin/ 2>/dev/null || true
           cp -v build/bin/dbimport      artifacts/bin/ 2>/dev/null || true
-          # 脚本库
           if [ -d "install/scripts" ]; then
             cp -v install/scripts/libscripts_*.so artifacts/scripts/ 2>/dev/null || true
             cp -v install/scripts/libscripts_*.dylib artifacts/scripts/ 2>/dev/null || true
@@ -138,7 +135,6 @@ jobs:
             cp -v build/lib/libscripts_*.so artifacts/scripts/ 2>/dev/null || true
             cp -v build/lib/libscripts_*.dylib artifacts/scripts/ 2>/dev/null || true
           fi
-          # 查找配置文件（递归）
           worldConf=$(find . -name "worldserver.conf.dist" -type f | head -1)
           authConf=$(find . -name "authserver.conf.dist" -type f | head -1)
           if [ -n "$worldConf" ]; then cp -v "$worldConf" artifacts/etc/; fi
@@ -147,12 +143,20 @@ jobs:
           echo "Full build of AzerothCore (commit: ${{ github.sha }})" > artifacts/README.txt
           echo "Build date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> artifacts/README.txt
 
-      # ========= 创建 ZIP 压缩包 =========
-      - name: Create final zip archive
+      # ========= 创建 ZIP 压缩包（跨平台兼容） =========
+      - name: Create final zip archive (Unix)
+        if: runner.os != 'Windows'
         run: |
           cd artifacts
           zip -r ../azerothcore-full-${{ matrix.artifact-suffix }}-${{ github.sha }}.zip .
         shell: bash
+
+      - name: Create final zip archive (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cd artifacts
+          Compress-Archive -Path * -DestinationPath ../azerothcore-full-${{ matrix.artifact-suffix }}-${{ github.sha }}.zip -CompressionLevel Optimal
+        shell: pwsh
 
       # ========= 上传 Artifact =========
       - name: Upload ZIP artifact
